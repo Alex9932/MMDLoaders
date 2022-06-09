@@ -9,3 +9,6 @@ Supported file formats (READ ONLY):
 - pmx (Polygon Model eXtended)
 - vmd (Vocaloid Motion Data)
 - vpd (Vocaloid Pose Data)
+
+
+![](https://raw.githubusercontent.com/Alex9932/MMDLoaders/master/screenshot.png)
