@@ -1,0 +1,137 @@
+/*
+ * vmd.cpp
+ *
+ *  Created on: Mar 19, 2022
+ *      Author: alex9932
+ */
+
+#define _CRT_SECURE_NO_WARNINGS
+
+#include "vmd.h"
+#include "utils.h"
+
+#include <map>
+#include <engine/engine.h>
+
+#include <engine/core/logger.h>
+
+#ifdef __GNUC__
+#define PACK( __Declaration__ ) __Declaration__ __attribute__((__packed__))
+#endif
+
+#ifdef _MSC_VER
+#define PACK( __Declaration__ ) __pragma( pack(push, 1) ) __Declaration__ __pragma( pack(pop))
+#endif
+
+PACK (struct _vmd_motion {
+	char bone_name[15];
+	Uint32 frame;
+	pmx_vec3 position;
+	pmx_vec4 rotation;
+	Uint8 interpolation[64];
+});
+
+static char string_buffer[128];
+
+vmd_file* vmd_load(const char* file) {
+	FILE* f = fopen(file, "rb");
+
+	sprintf(string_buffer, "FILE NOT FOUND => %s", file);
+	RG_ASSERT_MSG(f, string_buffer);
+
+	rgLogInfo(RG_LOG_SYSTEM, "VMD: Loading motion: %s\n", file);
+
+	vmd_file* vmd = (vmd_file*)malloc(sizeof(vmd_file));
+
+	fread(&vmd->magic, 1, 30, f);
+	fread(&vmd->name, 1, 20, f);
+	//memcpy(vmd->magic, header.magic, 30);
+	//memcpy(vmd->name, header.name, 20);
+
+	fread(&vmd->motion_count, sizeof(Sint32), 1, f);
+	vmd->motions = (vmd_motion*)malloc(sizeof(vmd_motion) * vmd->motion_count);
+	_vmd_motion motion;
+
+//	std::map<Uint32, Uint32> motions;
+
+	for (Sint32 i = 0; i < vmd->motion_count; ++i) {
+		fread(&motion, sizeof(_vmd_motion), 1, f);
+		memset(vmd->motions[i].bone_name, 0, 32);
+
+		MMD_Utils::SJISToUTF8(motion.bone_name);
+
+//		memcpy(pmd->bones[i].name, MMD_Utils::GetBuffer(), strlen(MMD_Utils::GetBuffer()));
+
+//		String s = SJISToUTF8(motion.bone_name).c_str();
+
+
+		memcpy(vmd->motions[i].bone_name, MMD_Utils::GetBuffer(), strlen(MMD_Utils::GetBuffer()));
+//		printf("VMD: Motion: %s\n", vmd->motions[i].bone_name);
+		vmd->motions[i].frame = motion.frame;
+		vmd->motions[i].position = motion.position;
+		vmd->motions[i].rotation = motion.rotation;
+		memcpy(vmd->motions[i].interpolation, motion.interpolation, 64);
+
+//		motions[motion.frame]++;
+	}
+//
+//	for(std::map<Uint32,Uint32>::iterator it = motions.begin(); it != motions.end(); ++it) {
+//		PRINT("VMD: %d => %d\n", it->first, it->second);
+//	}
+
+	fread(&vmd->face_count, sizeof(Sint32), 1, f);
+	vmd->faces = (vmd_face*)malloc(sizeof(vmd_face) * vmd->face_count);
+	char char_buffer[15];
+	for (Sint32 i = 0; i < vmd->face_count; ++i) {
+		fread(char_buffer, 1, 15, f);
+//		String s = SJISToUTF8(char_buffer).c_str();
+		memset(vmd->faces[i].name, 0, 32);
+
+		MMD_Utils::SJISToUTF8(char_buffer);
+
+
+		memcpy(vmd->faces[i].name, MMD_Utils::GetBuffer(), strlen(MMD_Utils::GetBuffer()));
+//		fread(vmd->faces[i].name, 1, 15, f);
+		fread(&vmd->faces[i].frame, sizeof(Uint32), 1, f);
+		fread(&vmd->faces[i].weight, sizeof(float), 1, f);
+	}
+
+
+	fread(&vmd->camera_count, sizeof(Sint32), 1, f);
+	vmd->cameras = (vmd_camera*)malloc(sizeof(vmd_camera) * vmd->camera_count);
+	Uint8 u8;
+	for (Sint32 i = 0; i < vmd->camera_count; ++i) {
+		fread(&vmd->cameras[i].frame, sizeof(Uint32), 1, f);
+		fread(&vmd->cameras[i].distance, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].target_x, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].target_y, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].target_z, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].camera_rx, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].camera_ry, sizeof(float), 1, f);
+		fread(&vmd->cameras[i].camera_rz, sizeof(float), 1, f);
+		fread(vmd->cameras[i].interpolation, 1, 24, f);
+		fread(&vmd->cameras[i].camera_fov, sizeof(Uint32), 1, f);
+		fread(&u8, 1, 1, f);
+		vmd->cameras[i].camera_perspective = u8;
+//		rgLogError(RG_LOG_GAME, "VMD: camera => %d - %f %f %f - %f %f %f - %f",
+//				vmd->cameras[i].frame,
+//				vmd->cameras[i].target_x,
+//				vmd->cameras[i].target_y,
+//				vmd->cameras[i].target_z,
+//				vmd->cameras[i].camera_rx,
+//				vmd->cameras[i].camera_ry,
+//				vmd->cameras[i].camera_rz,
+//				vmd->cameras[i].distance);
+	}
+
+	fclose(f);
+
+	return vmd;
+}
+
+void vmd_free(vmd_file* ptr) {
+	free(ptr->motions);
+	free(ptr->faces);
+	free(ptr->cameras);
+	free(ptr);
+}

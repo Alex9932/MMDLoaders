@@ -1,0 +1,346 @@
+/*
+ * pmd.cpp
+ *
+ *  Created on: Mar 20, 2022
+ *      Author: alex9932
+ */
+
+#include "pmd.h"
+#include "utils.h"
+#include <cstdio>
+
+#include <engine/engine.h>
+
+#ifdef STDOUTPUT
+#define PRINT printf
+#else
+#include <engine/core/logger.h>
+#define PRINT(args...) rgLogInfo(RG_LOG_SYSTEM, args)
+#endif
+
+//#define PMD_PRINTINFO
+
+typedef struct __attribute__((packed)) _pmd_weight {
+	Uint16 b_id[2];
+	Uint8 b_weight[2]; // 0 - 100
+} _pmd_weight;
+
+typedef struct __attribute__((packed)) _pmd_packed_flags {
+	Uint8 toon_number;
+	Uint8 edge_flag;
+} _pmd_packed_flags;
+
+static char string_buffer[128];
+
+pmd_file* pmd_load(const char* file) {
+	FILE* f = fopen(file, "rb");
+
+	sprintf(string_buffer, "FILE NOT FOUND => %s", file);
+	RG_ASSERT_MSG(f, string_buffer);
+
+	PRINT("PMD: Loading model: %s\n", file);
+
+	pmd_file* pmd = (pmd_file*)malloc(sizeof(pmd_file));
+	pmd->is_extended = false;
+
+	fread(pmd->signature, 1, 3, f);
+	fread(&pmd->version, 1, 4, f);
+	fread(&pmd->name, 1, 20, f);
+	fread(&pmd->comment, 1, 256, f);
+
+
+	fread(&pmd->vertex_count, sizeof(Uint32), 1, f);
+//	PRINT("vertces: %d\n", pmd->vertex_count);
+
+	pmd->vertices = (pmd_vertex*)malloc(sizeof(pmd_vertex) * pmd->vertex_count);
+	for (Uint32 i = 0; i < pmd->vertex_count; ++i) {
+		fread(&pmd->vertices[i].vertex, sizeof(pmd_position), 1, f);
+		_pmd_weight weight;
+		fread(&weight, sizeof(_pmd_weight), 1, f);
+		pmd->vertices[i].weight.b_id[0] = weight.b_id[0];
+		pmd->vertices[i].weight.b_id[1] = weight.b_id[1];
+		pmd->vertices[i].weight.b_weight[0] = weight.b_weight[0];
+		pmd->vertices[i].weight.b_weight[1] = weight.b_weight[1];
+	}
+
+	fread(&pmd->index_count, sizeof(Uint32), 1, f);
+//	PRINT("indices: %d\n", pmd->index_count);
+	pmd->indices = (Uint16*)malloc(sizeof(Uint16) * pmd->index_count);
+	fread(pmd->indices, sizeof(Uint16), pmd->index_count, f);
+
+	fread(&pmd->material_count, sizeof(Uint32), 1, f);
+	pmd->materials = (pmd_material*)malloc(sizeof(pmd_material) * pmd->material_count);
+	for (Uint32 i = 0; i < pmd->material_count; ++i) {
+		fread(&pmd->materials[i].colors, sizeof(pmd_material_colors), 1, f);
+		_pmd_packed_flags flags;
+		fread(&flags, sizeof(_pmd_packed_flags), 1, f);
+		pmd->materials[i].toon_number = flags.toon_number;
+		pmd->materials[i].edge_flag = flags.edge_flag;
+		fread(&pmd->materials[i].surface_count, sizeof(Uint32), 1, f);
+		fread(&pmd->materials[i].file_name, 1, 20, f);
+
+//		PRINT("[%d] Color: %f %f %f %f\n", i,
+//				pmd->materials[i].colors.r,
+//				pmd->materials[i].colors.g,
+//				pmd->materials[i].colors.b,
+//				pmd->materials[i].colors.a);
+
+
+//		PRINT("[%d] %d Texture: %s\n", i, pmd->materials[i].toon_number, pmd->materials[i].file_name);
+	}
+
+
+	char char_buffer[20];
+	Uint16 bones;
+	fread(&bones, sizeof(Uint16), 1, f);
+	pmd->bones_count = bones;
+//	PRINT("PMD: Bones: %d\n", pmd->bones_count);
+
+	pmd->bones = (pmd_bone*)malloc(sizeof(pmd_bone) * pmd->bones_count);
+	Uint8 u8;
+	for (Uint32 i = 0; i < pmd->bones_count; ++i) {
+		fread(char_buffer, 1, 20, f);
+//		String s = SJISToUTF8(char_buffer).c_str();
+
+		MMD_Utils::SJISToUTF8(char_buffer);
+		memset(pmd->bones[i].name, 0, 32);
+
+		memcpy(pmd->bones[i].name, MMD_Utils::GetBuffer(), strlen(MMD_Utils::GetBuffer()));
+
+//		memcpy(pmd->bones[i].name, s, strlen(s));
+		fread(&pmd->bones[i].parent, sizeof(Uint16), 1, f);
+		fread(&pmd->bones[i].child, sizeof(Uint16), 1, f);
+		fread(&u8, sizeof(Uint8), 1, f);
+		pmd->bones[i].bone_type = u8;
+		fread(&pmd->bones[i].bone_target, sizeof(Uint16), 1, f);
+		fread(&pmd->bones[i].x, sizeof(float), 1, f);
+		fread(&pmd->bones[i].y, sizeof(float), 1, f);
+		fread(&pmd->bones[i].z, sizeof(float), 1, f);
+
+//		printf("Bone%d name: %s\n", i, pmd->bones[i].name);
+//		printf("Bone%d name:", i);
+//		for (Uint32 j = 0; j < 20; ++j) {
+//			printf(" %x", (Uint8)pmd->bones[i].name[j]);
+//		}
+//		printf("\n");
+	}
+
+	Uint16 ik_s;
+	fread(&ik_s, sizeof(Uint16), 1, f);
+	pmd->ik_count = ik_s;
+	pmd->ik = (pmd_ik_info*)malloc(sizeof(pmd_ik_info) * pmd->ik_count);
+//	PRINT("IK chains: %d\n", ik_s);
+
+//	PRINT("PMD IK at: 0x%x\n", ftell(f));
+
+	for (Uint32 i = 0; i < pmd->ik_count; ++i) {
+		fread(&pmd->ik[i].target, sizeof(Uint16), 1, f);
+		fread(&pmd->ik[i].effector, sizeof(Uint16), 1, f);
+		fread(&u8, sizeof(Uint8), 1, f);
+		pmd->ik[i].bones = u8;
+		fread(&pmd->ik[i].max_iterations, sizeof(Uint16), 1, f);
+		fread(&pmd->ik[i].angle_limit, sizeof(float), 1, f);
+		pmd->ik[i].list = (Uint16*)malloc(sizeof(Uint16) * pmd->ik[i].bones);
+		fread(pmd->ik[i].list, sizeof(Uint16), pmd->ik[i].bones, f);
+//		pmd->ik[i].list = (Uint16*)malloc(sizeof(Uint16) * (pmd->ik[i].bones + 1));
+//		fread(&pmd->ik[i].list[1], sizeof(Uint16), pmd->ik[i].bones, f);
+//		pmd->ik[i].bones++;
+//		pmd->ik[i].list[0] = pmd->ik[i].effector;
+
+#ifdef PMD_PRINTINFO
+		PRINT("PMD: IK chain[%d] %d, %d %d", i, u8, pmd->ik[i].effector, pmd->ik[i].target);
+#endif
+
+//		for (Uint32 k = 0; k < pmd->ik[i].bones; ++k) {
+//			PRINT("%d", pmd->ik[i].list[k]);
+//		}
+//		PRINT("]");
+	}
+
+	Uint16 morphs;
+	fread(&morphs, sizeof(Uint16), 1, f);
+	pmd->morph_count = morphs;
+	pmd->morphs = (pmd_morph*)malloc(sizeof(pmd_morph) * pmd->morph_count);
+
+	for (Uint32 i = 0; i < pmd->morph_count; ++i) {
+		fread(char_buffer, 1, 20, f);
+		MMD_Utils::SJISToUTF8(char_buffer);
+		memcpy(pmd->morphs[i].name, MMD_Utils::GetBuffer(), strlen(MMD_Utils::GetBuffer()));
+		fread(&pmd->morphs[i].vertices, sizeof(Uint32), 1, f);
+		fread(&u8, sizeof(Uint8), 1, f);
+		pmd->morphs[i].face_type = u8;
+		pmd->morphs[i].list = (pmd_morph_vertex*)malloc(sizeof(pmd_morph_vertex) * pmd->morphs[i].vertices);
+		fread(pmd->morphs[i].list, sizeof(pmd_morph_vertex), pmd->morphs[i].vertices, f);
+	}
+
+	// Faces
+	Uint16 index;
+	fread(&u8, sizeof(Uint8), 1, f);
+	for (Uint8 i = 0; i < u8; ++i) {
+		fread(&index, sizeof(Uint16), 1, f);
+	}
+
+	// Bone group names
+	char group[50];
+	fread(&u8, sizeof(Uint8), 1, f);
+	pmd->bone_groups = u8;
+//	PRINT("Groups: %d\n", u8);
+	for (Uint8 i = 0; i < u8; ++i) {
+		fread(group, sizeof(char), 50, f);
+	}
+
+	// Displayed bones
+	Uint32 idx;
+	fread(&idx, sizeof(Uint32), 1, f);
+//	PRINT("DB: %d, Addr: 0x%x\n", idx, ftell(f));
+	Sint16 b_idx;
+	Uint8 bl_idx;
+	for (Uint32 i = 0; i < idx; ++i) {
+		fread(&b_idx, sizeof(Sint16), 1, f);
+		fread(&bl_idx, sizeof(Uint8), 1, f);
+	}
+
+
+	/////////////////////////////////////////////
+	/////////////////////////////////////////////
+	//                                         //
+	//   !!! END OF THE BASE FILE FORMAT !!!   //
+	//                                         //
+	/////////////////////////////////////////////
+	/////////////////////////////////////////////
+
+
+	size_t a = fread(&u8, sizeof(Uint8), 1, f);
+	if(a) {
+		pmd->is_extended = true;
+	}
+
+	// English data information
+	if(pmd->is_extended && u8) {
+		fread(pmd->e_name, 1, 20, f);
+		fread(pmd->e_comment, 1, 256, f);
+#ifdef PMD_PRINTINFO
+		PRINT("PMD: ~ ~ ~ EXTENDED DATA ~ ~ ~\n");
+		PRINT("PMD: Model name: %s\n", pmd->e_name);
+		PRINT("PMD: Comment: %s\n", pmd->e_comment);
+#endif
+
+		pmd->e_bones = (char**)malloc(sizeof(char*) * pmd->bones_count);
+		pmd->e_faces = (char**)malloc(sizeof(char*) * pmd->morph_count);
+		pmd->e_bone_group = (char**)malloc(sizeof(char*) * pmd->bone_groups);
+		pmd->e_toon_textures = (char**)malloc(sizeof(char*) * 10);
+
+//		PRINT("PMD: Reading bone names\n");
+		for (Uint32 i = 0; i < pmd->bones_count; ++i) {
+			pmd->e_bones[i] = (char*)malloc(20);
+			fread(pmd->e_bones[i], 1, 20, f);
+//			PRINT("B %d: %s\n", i, pmd->e_bones[i]);
+		}
+
+//		PRINT("PMD: Reading morph names\n");
+		for (Uint32 i = 0; i < pmd->morph_count - 1; ++i) {
+			pmd->e_faces[i] = (char*)malloc(20);
+			fread(pmd->e_faces[i], 1, 20, f);
+//			PRINT("F %d: %s\n", i, pmd->e_faces[i]);
+		}
+
+//		PRINT("PMD: Reading bone groups names\n");
+		for (Uint32 i = 0; i < pmd->bone_groups; ++i) {
+			pmd->e_bone_group[i] = (char*)malloc(50);
+			fread(pmd->e_bone_group[i], 1, 50, f);
+//			PRINT("BG %d: %s\n", i, pmd->e_bone_group[i]);
+		}
+
+//		PRINT("PMD: Reading toon names\n");
+		for (Uint32 i = 0; i < 10; ++i) {
+			pmd->e_toon_textures[i] = (char*)malloc(100);
+			fread(pmd->e_toon_textures[i], 1, 100, f);
+//			PRINT("TT %d: %s\n", i, pmd->e_toon_textures[i]);
+		}
+
+		fread(&pmd->rigidbody_count, sizeof(Uint32), 1, f);
+//		PRINT("PMD: Reading rbodies %d\n", pmd->rigidbody_count);
+
+		if(feof(f)) {
+			goto m_exit;
+		}
+
+		if(pmd->rigidbody_count != 0) {
+			pmd->rigidbodies = (pmd_rigidbody*)malloc(sizeof(pmd_rigidbody) * pmd->rigidbody_count);
+			for (Uint32 i = 0; i < pmd->rigidbody_count; ++i) {
+				fread(pmd->rigidbodies[i].name, 1, 20, f);
+				fread(&pmd->rigidbodies[i].bone_id, sizeof(Uint16), 1, f);
+				fread(&u8, 1, 1, f);
+				pmd->rigidbodies[i].collision_group = u8;
+				fread(&pmd->rigidbodies[i].collision_group_mask, sizeof(Uint16), 1, f);
+				fread(&u8, 1, 1, f);
+				pmd->rigidbodies[i].collision_shape = u8;
+				fread(&pmd->rigidbodies[i].w, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].h, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].d, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].x, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].y, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].z, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].rx, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].ry, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].rz, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].mass, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].linear_dampening, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].angular_dampening, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].restitution_coefficient, sizeof(float), 1, f);
+				fread(&pmd->rigidbodies[i].friction_coefficient, sizeof(float), 1, f);
+				fread(&u8, 1, 1, f);
+				pmd->rigidbodies[i].body_type = u8;
+			}
+		}
+
+//		PRINT("PMD: Reading constraints names\n");
+		fread(&pmd->constraint_count, sizeof(Uint32), 1, f);
+		if(pmd->constraint_count != 0) {
+			pmd->constraints = (pmd_constraint*)malloc(sizeof(pmd_constraint) * pmd->constraint_count);
+			fread(pmd->constraints, sizeof(pmd_constraint), pmd->constraint_count, f);
+		}
+
+#ifdef PMD_PRINTINFO
+//		PRINT("IK chains: %d, Morphs: %d, Addr: 0x%x\n", ik_s, morphs, ftell(f));
+		PRINT("IK chains: %d, Morphs: %d\n", ik_s, morphs);
+		PRINT("PMD: Bodies: %d, constraints: %d\n", pmd->rigidbody_count, pmd->constraint_count);
+#endif
+	}
+
+	m_exit:
+	fclose(f);
+	return pmd;
+}
+
+void pmd_free(pmd_file* ptr) {
+	free(ptr->vertices);
+	free(ptr->indices);
+	free(ptr->materials);
+	free(ptr->bones);
+	for (Uint32 i = 0; i < ptr->ik_count; ++i) {
+		free(ptr->ik[i].list);
+	}
+	for (Uint32 i = 0; i < ptr->morph_count; ++i) {
+		free(ptr->morphs[i].list);
+	}
+	free(ptr->ik);
+	free(ptr->morphs);
+	if(ptr->is_extended) {
+		for (Uint32 i = 0; i < ptr->bones_count; ++i) {
+			free(ptr->e_bones[i]);
+		}
+		for (Uint32 i = 0; i < ptr->morph_count; ++i) {
+			free(ptr->e_faces[i]);
+		}
+		for (Uint32 i = 0; i < ptr->bone_groups; ++i) {
+			free(ptr->e_bone_group[i]);
+		}
+		for (Uint32 i = 0; i < 10; ++i) {
+			free(ptr->e_toon_textures[i]);
+		}
+		free(ptr->rigidbodies);
+		free(ptr->constraints);
+	}
+	free(ptr);
+}
